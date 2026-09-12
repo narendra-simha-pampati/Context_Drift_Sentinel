@@ -1,0 +1,6 @@
+[2026-09-12 10:00:00] User: We need to design an automated test suite for our LLM context drift detection system.
+[2026-09-12 10:00:30] Assistant: You can use pytest combined with synthetic drift datasets to measure precision, recall, and inflection point latency across varying embedding models.
+[2026-09-12 10:01:00] User: What metrics should we track in CI/CD pipelines?
+[2026-09-12 10:01:30] Assistant: Key CI/CD metrics include false positive rate on stable dialogues, drift detection latency in number of turns, and cosine similarity variance across benchmark suites.
+[2026-09-12 10:02:00] User: How do we generate realistic synthetic adversarial dialogues?
+[2026-09-12 10:02:40] Assistant: You can use few-shot LLM prompts instructed to gradually introduce off-topic themes or sudden context hijacking patterns at predefined turn numbers.
