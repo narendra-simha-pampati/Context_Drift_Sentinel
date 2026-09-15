@@ -1,5 +1,6 @@
 """
 Unit and Integration Tests for Context Drift Sentinel.
+Covers multi-anchor similarity, calibrated drift scoring, event detection, recovery, and persistence.
 """
 
 from __future__ import annotations
@@ -18,15 +19,18 @@ from services.drift_detector import DriftDetector
 from services.recovery_engine import RecoveryEngine
 from utils.parser import parse_conversation_file, parse_csv_data, parse_json_data, parse_raw_text
 from utils.similarity import (
+    calculate_calibrated_drift_score,
     calculate_cosine_similarity,
     calculate_drift_score,
+    calculate_multi_anchor_similarity,
     classify_drift_status,
+    classify_turn_event,
     compute_exponential_moving_average,
 )
 
 
 class TestSimilarityAndScoring(unittest.TestCase):
-    """Test vector math and drift score conversions."""
+    """Test vector math, multi-anchor composite similarity, and calibrated drift scores."""
 
     def test_cosine_similarity_identical(self):
         v1 = np.array([1.0, 0.0, 0.0])
@@ -40,17 +44,37 @@ class TestSimilarityAndScoring(unittest.TestCase):
         sim = calculate_cosine_similarity(v1, v2)
         self.assertAlmostEqual(sim[0], 0.0, places=4)
 
-    def test_calculate_drift_score_bounds(self):
-        self.assertEqual(calculate_drift_score(1.0), 0.0)
-        self.assertEqual(calculate_drift_score(0.0), 100.0)
-        self.assertEqual(calculate_drift_score(0.5), 50.0)
-        self.assertEqual(calculate_drift_score(-0.5), 100.0)  # Capped at 100
+    def test_multi_anchor_similarity_weights(self):
+        # 0.4 * 0.8 + 0.4 * 0.7 + 0.2 * 0.6 = 0.32 + 0.28 + 0.12 = 0.72
+        s_comp = calculate_multi_anchor_similarity(0.8, 0.7, 0.6)
+        self.assertAlmostEqual(s_comp, 0.72, places=4)
+
+    def test_calculate_calibrated_drift_score(self):
+        # Stable technical dialogue should have drift in 5 - 20 range
+        stable_drift = calculate_calibrated_drift_score(0.45, 0.70, 0.65, 0.65)
+        self.assertTrue(5.0 <= stable_drift <= 20.0, f"Expected 5-20, got {stable_drift}")
+
+        # Complete topic switch should have drift in 80 - 100 range
+        switch_drift = calculate_calibrated_drift_score(0.05, 0.15, 0.10, 0.10)
+        self.assertTrue(80.0 <= switch_drift <= 100.0, f"Expected 80-100, got {switch_drift}")
 
     def test_classify_drift_status(self):
-        self.assertEqual(classify_drift_status(0.85, 0.65, 0.45), "NORMAL")
-        self.assertEqual(classify_drift_status(0.65, 0.65, 0.45), "NORMAL")
-        self.assertEqual(classify_drift_status(0.55, 0.65, 0.45), "WARNING")
-        self.assertEqual(classify_drift_status(0.40, 0.65, 0.45), "CRITICAL")
+        self.assertEqual(classify_drift_status(15.0, 35.0, 60.0), "NORMAL")
+        self.assertEqual(classify_drift_status(45.0, 35.0, 60.0), "WARNING")
+        self.assertEqual(classify_drift_status(75.0, 35.0, 60.0), "CRITICAL")
+
+    def test_classify_turn_event(self):
+        # Normal on-topic turn
+        self.assertEqual(classify_turn_event(1, current_drift=12.0, prev_drift=10.0, s_initial=0.5, s_summary=0.6), "Normal")
+        
+        # Minor expansion turn
+        self.assertEqual(classify_turn_event(2, current_drift=26.0, prev_drift=15.0, s_initial=0.3, s_summary=0.5), "Expansion")
+        
+        # Recovery turn: was drifted at 50, now dropped to 30 with intent rebound
+        self.assertEqual(classify_turn_event(5, current_drift=30.0, prev_drift=50.0, s_initial=0.45, s_summary=0.55), "Recovery")
+        
+        # Critical drift / topic switch
+        self.assertEqual(classify_turn_event(3, current_drift=75.0, prev_drift=40.0, s_initial=0.05, s_summary=0.10), "Critical Drift")
 
     def test_exponential_moving_average(self):
         data = [10.0, 20.0, 30.0]
@@ -122,16 +146,16 @@ class TestDatabaseManager(unittest.TestCase):
 
     def test_save_and_retrieve_session(self):
         messages = [
-            {"role": "user", "content": "Turn 0", "similarity_score": 1.0, "drift_score": 0.0, "drift_status": "NORMAL"},
-            {"role": "assistant", "content": "Turn 1", "similarity_score": 0.8, "drift_score": 20.0, "drift_status": "NORMAL"},
+            {"role": "user", "content": "Turn 0", "similarity_score": 1.0, "drift_score": 5.0, "drift_status": "NORMAL"},
+            {"role": "assistant", "content": "Turn 1", "similarity_score": 0.8, "drift_score": 12.0, "drift_status": "NORMAL"},
         ]
         self.db.save_session(
             session_id="test_sess_1",
             session_name="Test Session 1",
             intent_summary="Turn 0 intent",
             messages=messages,
-            drift_avg=10.0,
-            max_drift=20.0,
+            drift_avg=8.5,
+            max_drift=12.0,
             status="NORMAL",
         )
 
@@ -189,48 +213,53 @@ class TestRecoveryEngine(unittest.TestCase):
 
 
 class TestConversationAnalyzer(unittest.TestCase):
-    """Test summary analytics computations."""
+    """Test summary analytics and stable segment computations."""
 
     def test_compute_session_summary(self):
         messages = [
-            {"role": "user", "content": "A", "similarity_score": 1.0, "drift_score": 0.0, "drift_status": "NORMAL"},
-            {"role": "assistant", "content": "B", "similarity_score": 0.7, "drift_score": 30.0, "drift_status": "NORMAL"},
-            {"role": "user", "content": "C", "similarity_score": 0.4, "drift_score": 60.0, "drift_status": "CRITICAL"},
+            {"role": "user", "content": "A", "similarity_score": 0.85, "drift_score": 10.0, "drift_status": "NORMAL", "event": "Normal"},
+            {"role": "assistant", "content": "B", "similarity_score": 0.70, "drift_score": 25.0, "drift_status": "NORMAL", "event": "Expansion"},
+            {"role": "user", "content": "C", "similarity_score": 0.30, "drift_score": 75.0, "drift_status": "CRITICAL", "event": "Critical Drift"},
         ]
         summary = ConversationAnalyzer.compute_session_summary(messages)
         self.assertEqual(summary["total_turns"], 3)
         self.assertEqual(summary["user_turns"], 2)
         self.assertEqual(summary["assistant_turns"], 1)
-        self.assertEqual(summary["normal_turns"], 2)
+        self.assertEqual(summary["normal_turns"], 1)
+        self.assertEqual(summary["expansion_turns"], 1)
         self.assertEqual(summary["critical_turns"], 1)
-        self.assertAlmostEqual(summary["avg_drift"], 30.0, places=1)
-        self.assertAlmostEqual(summary["max_drift"], 60.0, places=1)
+        self.assertEqual(summary["longest_stable_segment"], 2)
+        self.assertEqual(summary["topic_switches_count"], 1)
 
 
-class TestDriftDetectorMocked(unittest.TestCase):
-    """Test DriftDetector with mocked embeddings for fast unit tests."""
+class TestDriftDetectorMultiAnchor(unittest.TestCase):
+    """Test DriftDetector with multi-anchor mock embeddings."""
 
     def test_analyze_with_mock_embeddings(self):
         mock_mgr = MagicMock()
-        # Mock 3 texts returning 3 vectors
-        # Vector 0: ref, Vector 1: similar, Vector 2: orthogonal
+        # Mock 4 vectors: ref, on-topic 1, on-topic 2, off-topic
         mock_mgr.encode.return_value = np.array([
-            [1.0, 0.0],
-            [0.9, 0.1],
-            [0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.9, 0.1, 0.0],
+            [0.85, 0.15, 0.0],
+            [0.0, 0.1, 0.99],
         ])
 
         detector = DriftDetector(embedding_manager=mock_mgr)
         messages = [
-            {"role": "user", "content": "Initial Intent"},
-            {"role": "assistant", "content": "Off topic reply"},
+            {"role": "user", "content": "Implement JWT in FastAPI"},
+            {"role": "assistant", "content": "Use RS256 algorithm"},
+            {"role": "user", "content": "What about homemade pizza dough?"},
         ]
 
         result = detector.analyze(messages)
-        self.assertEqual(len(result.messages), 2)
+        self.assertEqual(len(result.messages), 3)
         self.assertEqual(result.messages[0]["turn_index"], 0)
         self.assertEqual(result.messages[1]["turn_index"], 1)
-        self.assertTrue(result.max_drift > 0)
+        self.assertEqual(result.messages[2]["turn_index"], 2)
+        # Turn 1 is on-topic, Turn 2 is off-topic
+        self.assertTrue(result.messages[1]["drift_score"] < result.messages[2]["drift_score"])
+        self.assertTrue(result.longest_stable_segment >= 1)
 
 
 if __name__ == "__main__":

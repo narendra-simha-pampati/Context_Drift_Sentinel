@@ -72,21 +72,33 @@ In long, multi-turn LLM interactions (e.g., technical copilots, customer support
 
 ---
 
-## 🧮 Mathematical Formulation
+## 🧮 Multi-Anchor Mathematical Formulation
 
-### 1. Vector Cosine Similarity
-For a reference intent vector $\mathbf{u}$ and dialogue turn vector $\mathbf{v}_i$:
-$$\text{Sim}(\mathbf{u}, \mathbf{v}_i) = \frac{\mathbf{u} \cdot \mathbf{v}_i}{\|\mathbf{u}\| \|\mathbf{v}_i\|}$$
+Rather than comparing dialogue turns against only the first user prompt (which causes false positives as technical conversations deepen), Sentinel uses a **production multi-anchor composite semantic similarity engine**:
 
-### 2. Normalized Drift Score (0–100)
-$$\text{Drift Score}_i = \text{clamp}\Big((1.0 - \text{Sim}(\mathbf{u}, \mathbf{v}_i)) \times 100.0,\ 0.0,\ 100.0\Big)$$
-- **Score 0**: Complete semantic alignment with original user intent.
-- **Score 100**: Severe, total context divergence.
+### 1. The Three Semantic Anchors
+1. **Initial User Intent Anchor ($\mathbf{e}_{\text{initial}}$, Weight: 40%)**:
+   - Embeds the first meaningful user requirement.
+   - $S_{\text{initial}} = \cos(\mathbf{e}_i, \mathbf{e}_{\text{initial}})$
+2. **Rolling Conversation Context ($\mathbf{e}_{\text{rolling}}$, Weight: 40%)**:
+   - Embeds the rolling window of the previous 4–6 dialogue turns with exponential decay weights for local conversational continuity.
+   - $S_{\text{rolling}} = \cos(\mathbf{e}_i, \mathbf{e}_{\text{rolling}})$
+3. **Running Conversation Summary ($\mathbf{e}_{\text{summary}}$, Weight: 20%)**:
+   - Lightweight, non-LLM semantic summary vector representing the cumulative on-topic discussion so far.
+   - $S_{\text{summary}} = \cos(\mathbf{e}_i, \mathbf{e}_{\text{summary}})$
 
-### 3. Dynamic Threshold Classification
-- **🟢 NORMAL**: $\text{Sim} \ge \text{Threshold}_{\text{warn}}$ (Default: $\ge 0.30$)
-- **🟡 WARNING**: $\text{Threshold}_{\text{crit}} \le \text{Sim} < \text{Threshold}_{\text{warn}}$ (Default: $0.18 - 0.30$)
-- **🔴 CRITICAL**: $\text{Sim} < \text{Threshold}_{\text{crit}}$ (Default: $< 0.18$)
+### 2. Composite Semantic Similarity
+$$\text{Final Similarity} = 0.40 \cdot S_{\text{initial}} + 0.40 \cdot S_{\text{rolling}} + 0.20 \cdot S_{\text{summary}}$$
+
+### 3. Calibrated Drift Score (0–100 Scale) & EMA Smoothing
+- **🟢 Stable Technical Dialogue (Avg Drift 5–20)**: Follow-up questions, implementation details, edge cases, unit tests, security configurations, and performance discussions stay within 5–20.
+- **🔵 Minor Topic Expansion (Avg Drift 20–35)**: Related architectural components and tooling.
+- **🟡 Gradual Drift (Avg Drift 40–60)**: Moving into adjacent cloud infrastructure, DNS, or billing.
+- **🔴 Complete Topic Switch (Avg Drift 80–100)**: Changing domains (e.g., JWT $\to$ Cooking/Travel).
+- **Smooth Real-time EMA**: Applies $\alpha = 0.35$ exponential moving average smoothing.
+
+### 4. Dynamic Recovery Tracking
+If the user or assistant naturally steers the conversation back to the primary intent anchor, **the drift score smoothly decreases back down** rather than permanently staying high, recording a **`🔄 Recovery`** event.
 
 ---
 

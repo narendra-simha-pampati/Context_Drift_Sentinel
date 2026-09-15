@@ -14,27 +14,29 @@ import plotly.express as px
 # Professional enterprise color palette
 PALETTE = {
     "normal": "#10b981",    # Emerald green
+    "expansion": "#3b82f6", # Blue
     "warning": "#f59e0b",   # Amber
     "critical": "#ef4444",  # Crimson
+    "recovery": "#8b5cf6",  # Purple
     "primary": "#3b82f6",   # Blue
     "user": "#6366f1",      # Indigo
     "assistant": "#06b6d4", # Cyan
     "bg": "rgba(0,0,0,0)",
     "grid": "rgba(156, 163, 175, 0.2)",
-    "text": "#1e293b",
+    "text": "#0f172a",
 }
 
 
 def create_drift_timeline_chart(
     messages: List[Dict[str, Any]],
-    warning_threshold: float = 0.30,
-    critical_threshold: float = 0.18,
+    warning_threshold: float = 35.0,   # Drift score threshold
+    critical_threshold: float = 60.0,  # Drift score threshold
     show_ema: bool = True,
     chart_metric: str = "similarity",  # "similarity" or "drift"
 ) -> go.Figure:
     """
     Build interactive Plotly timeline chart showing conversational similarity/drift across turns.
-    Includes threshold bands, markers, tooltips, and inflection callouts.
+    Includes threshold bands, markers, tooltips, inflection callouts, and recovery annotations.
     """
     if not messages:
         fig = go.Figure()
@@ -46,99 +48,104 @@ def create_drift_timeline_chart(
     drifts = [float(m.get("drift_score", 0.0)) for m in messages]
     roles = [m.get("role", "unknown") for m in messages]
     statuses = [m.get("drift_status", "NORMAL") for m in messages]
+    events = [m.get("event", "Normal") for m in messages]
     snippets = [
-        (m.get("content", "")[:100] + "...") if len(m.get("content", "")) > 100 else m.get("content", "")
+        (m.get("content", "")[:90] + "...") if len(m.get("content", "")) > 90 else m.get("content", "")
         for m in messages
     ]
 
     is_sim = chart_metric == "similarity"
     y_values = sims if is_sim else drifts
-    y_title = "Semantic Similarity (vs Intent)" if is_sim else "Drift Score (0-100)"
+    y_title = "Multi-Anchor Semantic Similarity" if is_sim else "Drift Score (0-100)"
 
-    # Status color mapping
-    colors = [
-        PALETTE["normal"] if s == "NORMAL" else PALETTE["warning"] if s == "WARNING" else PALETTE["critical"]
-        for s in statuses
-    ]
+    # Event / Status color mapping
+    colors = []
+    for ev, st in zip(events, statuses):
+        if ev == "Recovery":
+            colors.append(PALETTE["recovery"])
+        elif st == "CRITICAL" or ev == "Critical Drift":
+            colors.append(PALETTE["critical"])
+        elif st == "WARNING" or ev == "Expansion":
+            colors.append(PALETTE["warning"])
+        else:
+            colors.append(PALETTE["normal"])
 
     fig = go.Figure()
-
-    # Add shaded threshold background zones if similarity mode
     max_turn = max(turns) if turns else 1
-    if is_sim:
-        # Green Zone (Optimal)
+
+    # Add shaded threshold background zones
+    if not is_sim:
+        # Green Zone (Normal: 0 - warning_threshold)
+        fig.add_shape(
+            type="rect",
+            x0=-0.5,
+            x1=max_turn + 0.5,
+            y0=-5,
+            y1=warning_threshold,
+            fillcolor="rgba(16, 185, 129, 0.08)",
+            line=dict(width=0),
+            layer="below",
+        )
+        # Yellow Zone (Warning/Expansion: warning_threshold - critical_threshold)
         fig.add_shape(
             type="rect",
             x0=-0.5,
             x1=max_turn + 0.5,
             y0=warning_threshold,
-            y1=1.05,
-            fillcolor="rgba(16, 185, 129, 0.08)",
+            y1=critical_threshold,
+            fillcolor="rgba(245, 158, 11, 0.08)",
             line=dict(width=0),
             layer="below",
         )
-        # Yellow Zone (Warning)
+        # Red Zone (Critical: critical_threshold - 105)
         fig.add_shape(
             type="rect",
             x0=-0.5,
             x1=max_turn + 0.5,
             y0=critical_threshold,
-            y1=warning_threshold,
-            fillcolor="rgba(245, 158, 11, 0.08)",
-            line=dict(width=0),
-            layer="below",
-        )
-        # Red Zone (Critical)
-        fig.add_shape(
-            type="rect",
-            x0=-0.5,
-            x1=max_turn + 0.5,
-            y0=-0.05,
-            y1=critical_threshold,
+            y1=105,
             fillcolor="rgba(239, 68, 68, 0.08)",
             line=dict(width=0),
             layer="below",
         )
 
-        # Horizontal threshold indicator lines
+        # Threshold lines
         fig.add_hline(
             y=warning_threshold,
             line_dash="dash",
-            line_color="rgba(245, 158, 11, 0.7)",
+            line_color="rgba(245, 158, 11, 0.8)",
             line_width=1.5,
-            annotation_text=f"Warning Threshold ({warning_threshold:.2f})",
-            annotation_position="top right",
+            annotation_text=f"Warning Level ({warning_threshold:.0f})",
+            annotation_position="bottom right",
             annotation_font_size=11,
         )
         fig.add_hline(
             y=critical_threshold,
             line_dash="dot",
-            line_color="rgba(239, 68, 68, 0.7)",
+            line_color="rgba(239, 68, 68, 0.8)",
             line_width=1.5,
-            annotation_text=f"Critical Threshold ({critical_threshold:.2f})",
-            annotation_position="bottom right",
+            annotation_text=f"Critical Drift ({critical_threshold:.0f})",
+            annotation_position="top right",
             annotation_font_size=11,
         )
     else:
-        # Drift score threshold lines (inverted)
-        warn_drift = (1.0 - warning_threshold) * 100.0
-        crit_drift = (1.0 - critical_threshold) * 100.0
+        # Similarity mode lines
         fig.add_hline(
-            y=warn_drift,
+            y=0.55,
             line_dash="dash",
             line_color="rgba(245, 158, 11, 0.7)",
             line_width=1.5,
-            annotation_text=f"Warning Level ({warn_drift:.0f})",
-            annotation_position="bottom right",
+            annotation_text="High Alignment Threshold (0.55)",
+            annotation_position="top right",
             annotation_font_size=11,
         )
         fig.add_hline(
-            y=crit_drift,
+            y=0.35,
             line_dash="dot",
             line_color="rgba(239, 68, 68, 0.7)",
             line_width=1.5,
-            annotation_text=f"Critical Drift ({crit_drift:.0f})",
-            annotation_position="top right",
+            annotation_text="Drift Breach Threshold (0.35)",
+            annotation_position="bottom right",
             annotation_font_size=11,
         )
 
@@ -148,7 +155,7 @@ def create_drift_timeline_chart(
             x=turns,
             y=y_values,
             mode="lines",
-            line=dict(color="#64748b", width=2),
+            line=dict(color="#64748b", width=2.5),
             hoverinfo="skip",
             showlegend=False,
             name="Trajectory",
@@ -158,11 +165,11 @@ def create_drift_timeline_chart(
     # Markers for each turn
     hover_templates = [
         f"<b>Turn {t}</b> ({r.upper()})<br>"
-        f"Similarity: {s:.3f}<br>"
-        f"Drift Score: {d:.1f}/100<br>"
-        f"Status: {st}<br>"
+        f"Semantic Sim: <b>{s:.3f}</b><br>"
+        f"Drift Score: <b>{d:.1f}/100</b><br>"
+        f"Event: <b>{ev}</b> | Status: {st}<br>"
         f"<i>Text: {snip}</i><extra></extra>"
-        for t, r, s, d, st, snip in zip(turns, roles, sims, drifts, statuses, snippets)
+        for t, r, s, d, st, ev, snip in zip(turns, roles, sims, drifts, statuses, events, snippets)
     ]
 
     fig.add_trace(
@@ -185,8 +192,8 @@ def create_drift_timeline_chart(
 
     # Detect and annotate first drift inflection turn
     drift_start_turn: Optional[int] = None
-    for idx, (s, st) in enumerate(zip(sims, statuses)):
-        if idx > 0 and st in ["WARNING", "CRITICAL"]:
+    for idx, (d, st) in enumerate(zip(drifts, statuses)):
+        if idx > 0 and (st in ["WARNING", "CRITICAL"] or d >= warning_threshold):
             drift_start_turn = turns[idx]
             break
 
@@ -202,12 +209,39 @@ def create_drift_timeline_chart(
             arrowwidth=2,
             arrowcolor="#f59e0b",
             ax=0,
-            ay=-40,
+            ay=-38,
             bgcolor="#ffffff",
             bordercolor="#f59e0b",
             borderwidth=1.5,
             borderpad=4,
             font=dict(size=11, color="#b45309", family="sans-serif"),
+        )
+
+    # Detect and annotate first recovery turn (if any)
+    recovery_turn: Optional[int] = None
+    for idx, ev in enumerate(events):
+        if ev == "Recovery":
+            recovery_turn = turns[idx]
+            break
+
+    if recovery_turn is not None and len(turns) > recovery_turn:
+        rec_val = y_values[recovery_turn]
+        fig.add_annotation(
+            x=recovery_turn,
+            y=rec_val,
+            text="🔄 Topic Recovery",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=2,
+            arrowcolor="#8b5cf6",
+            ax=0,
+            ay=38,
+            bgcolor="#ffffff",
+            bordercolor="#8b5cf6",
+            borderwidth=1.5,
+            borderpad=4,
+            font=dict(size=11, color="#6d28d9", family="sans-serif"),
         )
 
     fig.update_layout(

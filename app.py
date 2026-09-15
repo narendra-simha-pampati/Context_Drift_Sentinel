@@ -157,6 +157,27 @@ CUSTOM_CSS = """
         display: inline-block;
     }
     
+    .status-badge-expansion {
+        background-color: #eff6ff !important;
+        color: #1d4ed8 !important;
+        border: 1px solid #bfdbfe;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+    }
+    .status-badge-recovery {
+        background-color: #f5f3ff !important;
+        color: #6d28d9 !important;
+        border: 1px solid #ddd6fe;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+    }
+    
     /* Timeline message card */
     .chat-card {
         background: #ffffff;
@@ -405,22 +426,22 @@ def main() -> None:
             st.session_state.custom_intent = ""
 
         st.markdown("---")
-        st.markdown("#### 🎚️ Sensitivity Thresholds")
+        st.markdown("#### 🎚️ Drift Thresholds")
         warning_thresh = st.slider(
-            "Warning Similarity Threshold",
-            min_value=0.15,
-            max_value=0.75,
-            value=0.30,
-            step=0.01,
-            help="Conversations with similarity below this trigger WARNING status.",
+            "Warning Drift Threshold",
+            min_value=15.0,
+            max_value=50.0,
+            value=35.0,
+            step=1.0,
+            help="Conversations with drift score above this trigger WARNING status.",
         )
         critical_thresh = st.slider(
-            "Critical Similarity Threshold",
-            min_value=0.05,
-            max_value=0.50,
-            value=0.18,
-            step=0.01,
-            help="Conversations with similarity below this trigger CRITICAL status.",
+            "Critical Drift Threshold",
+            min_value=45.0,
+            max_value=85.0,
+            value=60.0,
+            step=1.0,
+            help="Conversations with drift score above this trigger CRITICAL status.",
         )
 
         st.markdown("---")
@@ -505,9 +526,9 @@ def main() -> None:
             st.markdown(
                 f"""
                 <div class="metric-card">
-                    <div class="metric-label">Average Drift</div>
-                    <div class="metric-value">{analysis_result.avg_drift:.1f}<span style="font-size: 1rem; color: #64748b;">/100</span></div>
-                    <div class="metric-sub">Avg Sim: {summary['avg_similarity']:.3f}</div>
+                    <div class="metric-label">Avg Similarity</div>
+                    <div class="metric-value">{analysis_result.avg_similarity:.3f}</div>
+                    <div class="metric-sub">Avg Drift: {analysis_result.avg_drift:.1f}/100</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -529,22 +550,25 @@ def main() -> None:
             st.markdown(
                 f"""
                 <div class="metric-card">
-                    <div class="metric-label">Conversation Turns</div>
-                    <div class="metric-value">{summary['total_turns']}</div>
-                    <div class="metric-sub">~{summary['approx_token_count']:,} tokens</div>
+                    <div class="metric-label">Longest Stable Segment</div>
+                    <div class="metric-value">{analysis_result.longest_stable_segment} <span style="font-size: 0.95rem; font-weight: 500; color: #64748b;">turns</span></div>
+                    <div class="metric-sub">Total: {summary['total_turns']} turns (~{summary['approx_token_count']:,} toks)</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
         with m_col5:
-            inflection_text = f"Turn {analysis_result.inflection_turn}" if analysis_result.inflection_turn is not None else "None (Aligned)"
+            inflection_text = f"Turn {analysis_result.inflection_turn}" if analysis_result.inflection_turn is not None else "Aligned"
             st.markdown(
                 f"""
                 <div class="metric-card">
-                    <div class="metric-label">Drift Origin</div>
-                    <div class="metric-value" style="font-size: 1.3rem; padding-top: 4px;">{inflection_text}</div>
-                    <div class="metric-sub">{summary['drift_percentage']}% turns drifted</div>
+                    <div class="metric-label">Events Telemetry</div>
+                    <div style="font-size: 1.15rem; font-weight: 700; color: #0f172a; margin-top: 6px;">
+                        <span style="color: #6d28d9;">🔄 {analysis_result.recoveries_count} Rec</span> | 
+                        <span style="color: #b91c1c;">⚡ {analysis_result.topic_switches_count} Switch</span>
+                    </div>
+                    <div class="metric-sub">Origin: {inflection_text}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -564,9 +588,9 @@ def main() -> None:
         # Chart Controls & Main Plotly Chart
         chart_ctrl1, chart_ctrl2 = st.columns([3, 1])
         with chart_ctrl1:
-            st.markdown("#### 📉 Conversational Drift Trajectory")
+            st.markdown("#### 📉 Conversational Drift Trajectory (Multi-Anchor)")
         with chart_ctrl2:
-            chart_metric = st.selectbox("Plot Metric", ["similarity", "drift"], format_func=lambda x: "Semantic Similarity" if x == "similarity" else "Drift Score (0-100)", label_visibility="collapsed")
+            chart_metric = st.selectbox("Plot Metric", ["similarity", "drift"], format_func=lambda x: "Multi-Anchor Similarity" if x == "similarity" else "Drift Score (0-100)", label_visibility="collapsed")
 
         timeline_fig = create_drift_timeline_chart(
             messages=analysis_result.messages,
@@ -593,15 +617,17 @@ def main() -> None:
     # -------------------------------------------------------------
     with tab_timeline:
         st.markdown("#### 💬 Turn-by-Turn Dialogue Inspector")
-        filter_col1, filter_col2 = st.columns([2, 1])
+        filter_col1, filter_col2, filter_col3 = st.columns([2, 1, 1])
         with filter_col1:
             role_filter = st.multiselect("Filter by Speaker", ["user", "assistant"], default=["user", "assistant"])
         with filter_col2:
             status_filter = st.multiselect("Filter by Status", ["NORMAL", "WARNING", "CRITICAL"], default=["NORMAL", "WARNING", "CRITICAL"])
+        with filter_col3:
+            event_filter = st.multiselect("Filter by Event", ["Normal", "Expansion", "Recovery", "Critical Drift"], default=["Normal", "Expansion", "Recovery", "Critical Drift"])
 
         filtered_turns = [
             m for m in analysis_result.messages
-            if m.get("role") in role_filter and m.get("drift_status") in status_filter
+            if m.get("role") in role_filter and m.get("drift_status") in status_filter and m.get("event", "Normal") in event_filter
         ]
 
         if not filtered_turns:
@@ -613,12 +639,27 @@ def main() -> None:
                 sim = m.get("similarity_score", 1.0)
                 drift = m.get("drift_score", 0.0)
                 status = m.get("drift_status", "NORMAL")
+                event = m.get("event", "Normal")
                 content = m.get("content", "")
                 timestamp = m.get("timestamp", "")
 
                 card_class = "normal" if status == "NORMAL" else "warning" if status == "WARNING" else "critical"
                 role_class = f"chat-role-{role}" if role in ["user", "assistant"] else "chat-role-user"
-                badge_class = f"status-badge-{card_class}"
+                status_badge_class = f"status-badge-{card_class}"
+                
+                # Event badge
+                if event == "Recovery":
+                    event_badge_class = "status-badge-recovery"
+                    event_label = "🔄 RECOVERY"
+                elif event == "Expansion":
+                    event_badge_class = "status-badge-expansion"
+                    event_label = "EXPANSION"
+                elif event == "Critical Drift":
+                    event_badge_class = "status-badge-critical"
+                    event_label = "⚡ TOPIC SWITCH"
+                else:
+                    event_badge_class = "status-badge-normal"
+                    event_label = "NORMAL"
 
                 st.markdown(
                     f"""
@@ -631,7 +672,8 @@ def main() -> None:
                             </div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <span style="font-size: 0.8rem; color: #64748b;">Sim: <strong>{sim:.3f}</strong> | Drift: <strong>{drift:.1f}</strong></span>
-                                <span class="{badge_class}">{status}</span>
+                                <span class="{event_badge_class}">{event_label}</span>
+                                <span class="{status_badge_class}">{status}</span>
                             </div>
                         </div>
                         <div style="font-size: 0.9rem; color: #334155; line-height: 1.5; white-space: pre-wrap;">{content}</div>
